@@ -1,0 +1,26 @@
+{
+  "name": "aicialnote",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "repository": "github:Eric-kbo/AicialNote",
+  "type": "module",
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "dev": "pnpm --filter @aicialnote/web dev",
+    "dev:server": "cd server && go run ./cmd/aicialnote",
+    "build": "node scripts/build.mjs",
+    "build:linux": "node scripts/build.mjs --linux",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm --filter @aicialnote/core --filter @aicialnote/storage test && cd server && go test ./...",
+    "smoke": "node scripts/smoke.mjs",
+    "screenshots": "node scripts/screenshots.mjs",
+    "lint": "biome check .",
+    "format": "biome check --write ."
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.5",
+    "playwright": "^1.65.0",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.0"
+  }
+}
