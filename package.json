@@ -18,7 +18,7 @@
     "format": "biome check --write ."
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.6.5",
+    "@biomejs/biome": "^2.6.6",
     "playwright": "^1.65.0",
     "typescript": "^7.0.2",
     "vitest": "^5.1.0"
