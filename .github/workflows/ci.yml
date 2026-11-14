@@ -41,3 +41,46 @@ jobs:
       - run: go vet ./...
       - run: go test -race ./...
       - run: go build ./cmd/aicialnote
+
+  # Ships main to aicialnotes.com once both checks pass. The key in the `production` environment can only run
+  # /usr/local/sbin/aicialnote-install on the server (scripts/deploy/aicialnote-install.sh), which reads the binary
+  # from stdin, keeps a backup and rolls back if the new binary doesn't come up.
+  deploy:
+    needs: [web, server]
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://aicialnotes.com
+    concurrency:
+      group: deploy
+      cancel-in-progress: false
+    env:
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build:linux
+      - name: Upload and restart
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_HOST: ${{ vars.DEPLOY_HOST }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes -o BatchMode=yes \
+            "deploy@$DEPLOY_HOST" < server/bin/aicialnote-linux-amd64
+      - name: Check the site
+        run: curl -fsS -o /dev/null --retry 5 --retry-delay 3 --retry-all-errors https://aicialnotes.com/

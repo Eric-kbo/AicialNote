@@ -73,6 +73,20 @@ one exists.
 Put it behind HTTPS (Caddy, nginx, Cloudflare, Fly.io, Cloud Run …). Cookies are marked `Secure` whenever
 `AICIALNOTE_PUBLIC_URL` starts with `https://`.
 
+### Deploying on every push to `main`
+
+The `deploy` job in `.github/workflows/ci.yml` builds the Linux binary after both checks pass and pipes it over SSH
+to the server. On the server, a `deploy` user holds a key that can do only one thing: run
+[`scripts/deploy/aicialnote-install.sh`](../scripts/deploy/aicialnote-install.sh) through `sudo`. That script backs up
+the old binary, restarts the service and rolls back if the new binary doesn't answer. Setup is described in the
+script's header. In the GitHub repository, create an environment named `production`, limited to `main`, with:
+
+- secret `DEPLOY_SSH_KEY`: the private key
+- secret `DEPLOY_KNOWN_HOSTS`: `<host> ssh-ed25519 AAAA…` from the server's `/etc/ssh/ssh_host_ed25519_key.pub`
+- variable `DEPLOY_HOST`: the server's address
+
+To approve each deploy by hand, add a required reviewer to the environment. No code change is needed.
+
 ## How sign-in works
 
 ```
