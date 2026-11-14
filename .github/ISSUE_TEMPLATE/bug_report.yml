@@ -1,0 +1,52 @@
+name: Bug report / 问题反馈
+description: Something doesn't work as expected. 功能不符合预期。
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Never paste real passwords, 2FA secrets or tokens here.** 请不要在这里粘贴真实的密码、2FA 密钥或令牌。
+        Security issues: see [SECURITY.md](https://github.com/Eric-kbo/AicialNote/blob/main/SECURITY.md). 安全问题请私下报告。
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened? / 发生了什么？
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      placeholder: |
+        1. Open demo data
+        2. …
+    validations:
+      required: true
+  - type: dropdown
+    id: storage
+    attributes:
+      label: Storage / 存储位置
+      options:
+        - Google Drive
+        - OneDrive
+        - Local folder / 本地文件夹
+        - Demo data / 演示数据
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser and OS / 浏览器和系统
+      placeholder: Chrome 140, Windows 11
+  - type: input
+    id: instance
+    attributes:
+      label: Instance / 使用的站点
+      description: aicialnotes.com, self-hosted, or `pnpm dev`
+  - type: textarea
+    id: logs
+    attributes:
+      label: Console errors / 控制台报错
+      description: From the browser's developer tools, if any. Remove anything personal first.
+      render: text

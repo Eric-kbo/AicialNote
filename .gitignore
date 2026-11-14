@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.local
+.env
+.env.*
+!.env.example
+coverage/
+.DS_Store
+server/bin/
+server/internal/webui/dist/*
+!server/internal/webui/dist/
+!server/internal/webui/dist/.gitkeep
+web/test-results/
+web/playwright-report/
+
+.shots/
+work/
