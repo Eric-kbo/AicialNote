@@ -684,7 +684,6 @@ function joinProxyPort(entry: ParsedEntry): ParsedValue[] {
   )
 }
 
-/** Builds a card from a template and fills it with parsed values. */
 /**
  * Builds a card from a template and fills it with parsed values. Template slots the paste left empty are dropped,
  * so the card shows only what was pasted; when nothing was recognised the template is kept to be filled by hand.
