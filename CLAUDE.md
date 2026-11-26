@@ -26,7 +26,7 @@ big-company product with no "AI-generated" look**.
 pnpm install            # set PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1; Playwright uses the locally installed Chrome
 pnpm dev                # web on http://localhost:5173 (proxies /auth → :8080)
 pnpm dev:server         # Go OAuth broker on :8080, reads server/.env
-pnpm test               # vitest (packages/core, packages/storage) + go test
+pnpm test               # vitest (packages/*, web) + go test
 pnpm typecheck
 pnpm lint               # Biome; `pnpm format` auto-fixes
 pnpm i18n:report        # how complete each translation in web/src/i18n/locales/ is
@@ -98,6 +98,9 @@ scripts/               build.mjs   smoke.mjs   screenshots.mjs
 - Google Drive is id-based. The adapter resolves paths folder by folder and **caches the in-flight folder promise**.
   Without that cache, concurrent first writes create duplicate `AicialNote/` folders. The file's etag is Drive's
   `version`.
+- Drive allows two folders or two files with one name in one place, and its create is not atomic, so two clients
+  writing the same new path leave twins. The adapter reads twins as one (all folders of a name together, of two
+  files the one changed last). Picking a single twin made accounts vanish and put old values over new ones.
 - OneDrive: `@microsoft.graph.downloadUrl` is pre-authenticated, so don't send the bearer token to it. For personal
   accounts it points at `*.microsoftpersonalcontent.com`, which must be in `connect-src`. The Vite dev server sends
   no CSP, so a missing host only shows up in the built server as "Failed to fetch". Create-only
@@ -106,6 +109,10 @@ scripts/               build.mjs   smoke.mjs   screenshots.mjs
 **Sync engine (`web/src/data/sync.ts`)**
 
 - The outbox is coalesced per key, so only the newest entry per item is pushed.
+- Tabs of one vault share the Dexie cache and the outbox. A run holds a Web Lock (`exclusive`), so only one tab
+  syncs at a time. Without it two tabs pushed the same new item at once and created it twice on Google Drive.
+- A pull applies a file only if the item's sync record is still the one it saw when it decided to read. "Outbox is
+  empty" is not enough: another tab may have pushed a newer edit while the read was in flight.
 - Deletes are pushed after a 6s delay, which gives "Undo" time to work.
 - Pulls run every 60s, on focus and on `online`.
 - An empty `items/` listing while more than 3 items are known is treated as a provider glitch and ignored, so it

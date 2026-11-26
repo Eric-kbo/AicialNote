@@ -45,6 +45,7 @@ const RETRY_DELAY = 20_000
  * - On a conflict (someone else changed the file) the local version wins and
  *   the remote version is kept in history/ — nothing is dropped.
  * - Files written by a newer app version are never overwritten.
+ * - Tabs of one vault share the cache and the outbox, so only one of them syncs at a time (`exclusive`).
  */
 export class SyncEngine {
   private status: SyncStatus = { phase: 'idle' }
@@ -112,6 +113,16 @@ export class SyncEngine {
     }
     if (this.status.phase === 'blocked') return
     this.running = true
+    try {
+      await exclusive(`aicialnote-sync-${this.db.name}`, () => this.cycle())
+    } finally {
+      this.running = false
+    }
+  }
+
+  private async cycle(): Promise<void> {
+    // The wait for another tab can outlive this engine.
+    if (this.stopped) return
     this.set({ phase: 'syncing' })
     try {
       do {
@@ -135,8 +146,6 @@ export class SyncEngine {
         this.set({ phase: 'error', error: err instanceof Error ? err.message : String(err) })
         this.schedule(RETRY_DELAY)
       }
-    } finally {
-      this.running = false
     }
   }
 
@@ -347,6 +356,8 @@ export class SyncEngine {
       const { item, etag, text } = remote
       await this.db.transaction('rw', this.db.items, this.db.sync, this.db.outbox, async () => {
         if (await this.db.outbox.where('key').equals(`item:${item.id}`).count()) return
+        // Synced by another tab while the file was being read: what was read may already be the older version.
+        if ((await this.db.sync.get(item.id))?.etag !== known.get(f.id)?.etag) return
         await this.db.items.put(item)
         await this.db.sync.put({ id: item.id, etag, base: text, readablePath: paths.readable(item) })
       })
@@ -360,6 +371,7 @@ export class SyncEngine {
       await this.db.transaction('rw', this.db.items, this.db.sync, this.db.outbox, async () => {
         for (const s of gone) {
           if (await this.db.outbox.where('key').equals(`item:${s.id}`).count()) continue
+          if ((await this.db.sync.get(s.id))?.etag !== s.etag) continue
           await this.db.items.delete(s.id)
           await this.db.sync.delete(s.id)
         }
@@ -393,6 +405,7 @@ export class SyncEngine {
       const { note, etag, text } = remote
       await this.db.transaction('rw', this.db.notes, this.db.sync, this.db.outbox, async () => {
         if (await this.db.outbox.where('key').equals(`note:${note.id}`).count()) return
+        if ((await this.db.sync.get(note.id))?.etag !== known.get(f.id)?.etag) return
         await this.db.notes.put(note)
         const readablePath = note.kind === 'page' ? paths.readableNote(note, meta.locale) : undefined
         await this.db.sync.put({ id: note.id, etag, base: text, readablePath, kind: 'note' })
@@ -405,6 +418,7 @@ export class SyncEngine {
       await this.db.transaction('rw', this.db.notes, this.db.sync, this.db.outbox, async () => {
         for (const s of gone) {
           if (await this.db.outbox.where('key').equals(`note:${s.id}`).count()) continue
+          if ((await this.db.sync.get(s.id))?.etag !== s.etag) continue
           await this.db.notes.delete(s.id)
           await this.db.sync.delete(s.id)
         }
@@ -431,6 +445,16 @@ function guardNewer(text: string) {
   } catch (err) {
     if (err instanceof UnsupportedVersionError) throw err
   }
+}
+
+/**
+ * Runs `fn` while no other tab of this browser is syncing the same vault. Two engines pushing one outbox create
+ * the same file twice on Google Drive, and one of them can put a file it read earlier over a newer local edit.
+ * Browsers without Web Locks (or a page that is not a secure context) run unguarded.
+ */
+function exclusive<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  const locks = typeof navigator === 'undefined' ? undefined : navigator.locks
+  return locks ? (locks.request(name, fn) as Promise<T>) : fn()
 }
 
 async function pool<T>(items: T[], size: number, fn: (item: T) => Promise<void>) {

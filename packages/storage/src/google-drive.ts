@@ -21,6 +21,7 @@ interface GFile {
   name: string
   version?: string
   modifiedTime?: string
+  createdTime?: string
   size?: string
 }
 
@@ -30,10 +31,15 @@ interface GFile {
  * ("My Drive/AicialNote") so users can always open their data in Drive.
  *
  * Drive is id-based, so paths are resolved folder by folder and cached.
+ *
+ * Drive also allows two folders or two files with one name in the same place, and two clients that create the
+ * same path at the same moment leave such twins behind. They are read as one: a folder is all folders of that
+ * name together, and a file is the twin that changed last. Otherwise each client would pick its own twin and
+ * hand the other an old copy as if it were news.
  */
 export class GoogleDriveAdapter implements StorageAdapter {
   readonly kind = 'google'
-  private folders = new Map<string, Promise<string | null>>()
+  private folders = new Map<string, Promise<string[]>>()
   private files = new Map<string, string>()
 
   constructor(
@@ -43,13 +49,13 @@ export class GoogleDriveAdapter implements StorageAdapter {
 
   async list(dir: string): Promise<FileMeta[]> {
     const d = normalizePath(dir)
-    const folderId = await this.folder(d, false)
-    if (!folderId) return []
-    const out: FileMeta[] = []
+    const folderIds = await this.folderIds(d, false)
+    if (folderIds.length === 0) return []
+    const byPath = new Map<string, GFile>()
     let pageToken: string | undefined
     do {
       const params = new URLSearchParams({
-        q: `'${folderId}' in parents and trashed = false and mimeType != '${FOLDER}'`,
+        q: `${inParents(folderIds)} and trashed = false and mimeType != '${FOLDER}'`,
         fields: `nextPageToken,files(${FILE_FIELDS})`,
         pageSize: '1000',
         spaces: 'drive',
@@ -60,11 +66,16 @@ export class GoogleDriveAdapter implements StorageAdapter {
       const body = (await res.json()) as { files: GFile[]; nextPageToken?: string }
       for (const f of body.files) {
         const path = d ? `${d}/${f.name}` : f.name
-        this.files.set(path, f.id)
-        out.push(toMeta(path, f))
+        const other = byPath.get(path)
+        if (!other || isNewer(f, other)) byPath.set(path, f)
       }
       pageToken = body.nextPageToken
     } while (pageToken)
+    const out: FileMeta[] = []
+    for (const [path, f] of byPath) {
+      this.files.set(path, f.id)
+      out.push(toMeta(path, f))
+    }
     return out.sort((a, b) => a.name.localeCompare(b.name))
   }
 
@@ -170,69 +181,83 @@ export class GoogleDriveAdapter implements StorageAdapter {
     const cached = this.files.get(path)
     if (cached) return cached
     const { dir, name } = splitPath(path)
-    const parent = await this.folder(dir, false)
-    if (!parent) return null
-    const id = await this.lookup(name, parent, false)
+    const parents = await this.folderIds(dir, false)
+    if (parents.length === 0) return null
+    const twins = await this.lookup(name, parents, false)
+    const id = twins.reduce<GFile | null>((best, f) => (!best || isNewer(f, best) ? f : best), null)?.id ?? null
     if (id) this.files.set(path, id)
     return id
   }
 
+  /** The folder new files go into: of twins, the one created first, which no later write can change. */
   private folder(path: string, create: true): Promise<string>
-  private folder(path: string, create: boolean): Promise<string | null>
   private async folder(path: string, create: boolean): Promise<string | null> {
+    return (await this.folderIds(path, create))[0] ?? null
+  }
+
+  /** Every folder at this path, oldest first. Empty when there is none and `create` is off. */
+  private async folderIds(path: string, create: boolean): Promise<string[]> {
     const key = normalizePath(path)
     const cached = this.folders.get(key)
     if (cached) {
-      const id = await cached
-      if (id || !create) return id
+      const ids = await cached
+      if (ids.length > 0 || !create) return ids
     }
     // Cache the in-flight promise so concurrent writes don't create duplicates.
-    const pending = this.resolveFolder(key, create)
+    const pending = this.resolveFolders(key, create)
     this.folders.set(key, pending)
     try {
-      const id = await pending
-      if (!id && this.folders.get(key) === pending) this.folders.delete(key)
-      return id
+      const ids = await pending
+      if (ids.length === 0 && this.folders.get(key) === pending) this.folders.delete(key)
+      return ids
     } catch (err) {
       if (this.folders.get(key) === pending) this.folders.delete(key)
       throw err
     }
   }
 
-  private async resolveFolder(key: string, create: boolean): Promise<string | null> {
+  private async resolveFolders(key: string, create: boolean): Promise<string[]> {
     const { dir, name } = key ? splitPath(key) : { dir: '', name: '' }
-    const parent = key ? await this.folder(dir, create) : 'root'
-    if (!parent) return null
+    const parents = key ? await this.folderIds(dir, create) : ['root']
+    if (parents.length === 0) return []
     const folderName = key ? name : this.rootName
-    const found = await this.lookup(folderName, parent, true)
-    if (found || !create) return found
+    const found = await this.lookup(folderName, parents, true)
+    if (found.length > 0 || !create) {
+      const age = (f: GFile) => f.createdTime ?? ''
+      return found.sort((a, b) => age(a).localeCompare(age(b)) || a.id.localeCompare(b.id)).map((f) => f.id)
+    }
     const res = await this.call(`${API}/files?fields=id`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: folderName, mimeType: FOLDER, parents: [parent] }),
+      body: JSON.stringify({ name: folderName, mimeType: FOLDER, parents: [parents[0]] }),
     })
     if (!res.ok) throw await failure(res, `Create folder ${key || this.rootName}`)
-    return ((await res.json()) as GFile).id
+    return [((await res.json()) as GFile).id]
   }
 
-  private async lookup(name: string, parent: string, isFolder: boolean): Promise<string | null> {
+  private async lookup(name: string, parents: string[], isFolder: boolean): Promise<GFile[]> {
     const q = [
       `name = '${escapeQ(name)}'`,
-      `'${parent}' in parents`,
+      inParents(parents),
       'trashed = false',
       isFolder ? `mimeType = '${FOLDER}'` : `mimeType != '${FOLDER}'`,
     ].join(' and ')
-    const params = new URLSearchParams({
-      q,
-      fields: 'files(id,modifiedTime)',
-      orderBy: 'modifiedTime desc',
-      pageSize: '10',
-    })
+    const params = new URLSearchParams({ q, fields: 'files(id,modifiedTime,createdTime)', pageSize: '100' })
     const res = await this.call(`${API}/files?${params}`)
     if (!res.ok) throw await failure(res, `Lookup ${name}`)
-    const body = (await res.json()) as { files: GFile[] }
-    return body.files[0]?.id ?? null
+    return ((await res.json()) as { files: GFile[] }).files
   }
+}
+
+function inParents(ids: string[]) {
+  return `(${ids.map((id) => `'${id}' in parents`).join(' or ')})`
+}
+
+/** Of two files with one name, the one changed last is the file; the id only makes the choice stable. */
+function isNewer(a: GFile, b: GFile) {
+  const at = a.modifiedTime ?? ''
+  const bt = b.modifiedTime ?? ''
+  return at === bt ? a.id > b.id : at > bt
 }
 
 function escapeQ(s: string) {

@@ -142,11 +142,11 @@ describe('GoogleDriveAdapter', () => {
       const url = new URL(c.url)
       const q = url.searchParams.get('q')
       if (c.method === 'GET' && url.pathname === '/drive/v3/files' && q) {
-        const parent = q.match(/'([^']+)' in parents/)![1]
+        const parents = [...q.matchAll(/'([^']+)' in parents/g)].map((m) => m[1])
         const name = q.match(/name = '([^']+)'/)?.[1]
         const wantFolder = q.includes("mimeType = 'application/vnd.google-apps.folder'")
         const found = [...files.values()].filter(
-          (f) => !f.trashed && f.parent === parent && (!name || f.name === name) && f.folder === wantFolder,
+          (f) => !f.trashed && parents.includes(f.parent) && (!name || f.name === name) && f.folder === wantFolder,
         )
         return json({ files: found.map((f) => ({ id: f.id, name: f.name, version: String(f.version) })) })
       }
@@ -207,6 +207,23 @@ describe('GoogleDriveAdapter', () => {
     await g.remove('items/a.json')
     expect([...files.values()].find((f) => f.name === 'a.json')!.trashed).toBe(true)
     expect(calls.some((c) => c.method === 'DELETE')).toBe(false)
+  })
+
+  it('lists a name that exists twice once, and reads and writes that same file', async () => {
+    const { files } = fakeDrive()
+    const g = new GoogleDriveAdapter(token)
+    await g.write('items/a.json', 'first')
+    const first = [...files.values()].find((f) => f.name === 'a.json')!
+    files.set('twin', { ...first, id: 'twin', text: 'twin', version: 7 })
+
+    for (const adapter of [g, new GoogleDriveAdapter(token)]) {
+      const listed = await adapter.list('items')
+      expect(listed.map((f) => [f.path, f.etag])).toEqual([['items/a.json', '7']])
+      expect(await adapter.read('items/a.json')).toEqual({ text: 'twin', etag: '7' })
+    }
+    await g.write('items/a.json', 'next', { ifMatch: '7' })
+    expect(files.get('twin')!.text).toBe('next')
+    expect(first.text).toBe('first')
   })
 
   it('treats a token without Drive access as signed out, but not other 403s', async () => {
